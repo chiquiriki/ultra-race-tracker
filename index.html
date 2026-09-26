@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>Patriot Loop — Live Crew Tracker</title>
+<title>Double Beaman Loop — Live Crew Tracker</title>
 
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -21,6 +21,8 @@
     --green: #3ddc84;
     --amber: #f2b705;
     --blue: #2f8bff;
+    --neon-green: #39ff14;
+    --navy: #173fa6;
   }
   *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   html,body{
@@ -105,6 +107,37 @@
   .status-banner.stale{
     border-color:var(--amber); color:var(--text);
     animation:flashStale 1.2s infinite;
+  }
+
+  /* ---------- Live progress bar ---------- */
+  .progress-card{
+    background:var(--panel-2);
+    border:1px solid var(--border);
+    border-radius:10px;
+    padding:10px 12px;
+    margin-bottom:10px;
+  }
+  .progress-bar-track{
+    width:100%;
+    height:10px;
+    background:#0d1015;
+    border:1px solid var(--border);
+    border-radius:6px;
+    overflow:hidden;
+    margin-bottom:6px;
+  }
+  .progress-bar-fill{
+    height:100%;
+    width:0%;
+    background:linear-gradient(90deg, var(--red-dim), var(--red));
+    border-radius:6px 0 0 6px;
+    transition:width 0.5s ease;
+  }
+  .progress-text{
+    font-size:12px;
+    font-weight:600;
+    color:var(--text);
+    text-align:center;
   }
 
   /* ---------- Race clock ---------- */
@@ -223,6 +256,13 @@
       🛰️ Waiting for Garmin Signal (Device has not broadcasted its first point yet).
     </div>
 
+    <div class="progress-card" id="progressCard">
+      <div class="progress-bar-track">
+        <div class="progress-bar-fill" id="progressBarFill" style="width:0%"></div>
+      </div>
+      <div class="progress-text" id="progressText">Awaiting first ping to calculate progress…</div>
+    </div>
+
     <div class="clock-row" id="clockRow">
       <div class="clock-left">
         <div class="clock-label" id="clockLabel">Elapsed Time</div>
@@ -239,7 +279,7 @@
       <div class="stat-card">
         <div class="stat-label">Current Mile</div>
         <div class="stat-value accent" id="mileValue">—</div>
-        <div class="stat-sub" id="mileSub">of 12.35 mi loop</div>
+        <div class="stat-sub" id="mileSub">of 24.5 mi loop</div>
       </div>
 
       <div class="stat-card">
@@ -318,6 +358,7 @@ const milestones = [
   { name: "Proctor Farm Junction (Outbound CW)", mile: 21.4 },
   { name: "Upper Parking Lot (Finish)", mile: 24.5 }
 ];
+
 /* =========================================================================
    STATE
    ========================================================================= */
@@ -329,6 +370,9 @@ let totalRouteMiles = 0;
 let routeBounds = null;  // Leaflet bounds of the trail itself
 let hasCenteredOnFirstFix = false; // only auto-pan/zoom once, on the first ping
 
+let completedLine = null; // neon-green breadcrumb segment (already covered)
+let remainingLine = null; // navy-blue breadcrumb segment (still ahead)
+
 let liveDotMarker = null;
 let lastTwoPings = [];   // [{mile, time, lat, lng, offsetMiles, elevationFt, speedMph}], oldest first, max length 2
 let lastUpdateTime = null;
@@ -337,8 +381,8 @@ let feedTimer = null;
 let raceFinished = false;
 let finishElapsedMs = null; // locked elapsed time once the finish milestone is reached
 
-const activityLog = [];        // newest-first array of processed pings
-const MAX_LOG_ENTRIES = 250;
+const activityLog = [];        // newest-first array, rebuilt fresh from full KML history on every fetch
+const MAX_LOG_ENTRIES = 250;   // display cap for performance — doesn't limit how much history is parsed
 
 /* =========================================================================
    INIT
@@ -410,17 +454,14 @@ async function loadRoute() {
   document.getElementById('mileSub').textContent =
     `of ${totalRouteMiles.toFixed(1)} mi loop`;
 
-  // Draw the trail — high-visibility red line
+  // Render the trail as a dynamic two-segment "breadcrumb" instead of one
+  // static line: neon green for the portion already completed, navy blue
+  // for what's still ahead. Starts as 100% navy (nothing completed yet);
+  // updateBreadcrumbRoute() re-splits it on every new ping.
   const latlngArr = routeLatLngs.map(p => [p.lat, p.lng]);
-  const trail = L.polyline(latlngArr, {
-    color: '#e2372f',
-    weight: 5,
-    opacity: 0.95,
-    lineJoin: 'round'
-  }).addTo(map);
-
-  map.fitBounds(trail.getBounds(), { padding: [24, 24] });
-  routeBounds = trail.getBounds();
+  routeBounds = L.latLngBounds(latlngArr);
+  map.fitBounds(routeBounds, { padding: [24, 24] });
+  initBreadcrumbLines();
 }
 
 function addMilestoneMarkers() {
@@ -496,7 +537,7 @@ function projectToRoute(lat, lng) {
 }
 
 /* Inverse of the above — given a mile-along-route, return a lat/lng.
-   Used to place milestone markers. */
+   Used to place milestone markers and to split the breadcrumb route. */
 function mileToLatLng(mile) {
   if (!cumDist.length) return null;
   const clamped = Math.max(0, Math.min(mile, totalRouteMiles));
@@ -516,7 +557,53 @@ function mileToLatLng(mile) {
 }
 
 /* =========================================================================
-   LIVE FEED (Garmin inReach KML via CORS proxy)
+   DYNAMIC BREADCRUMB COURSE RECOLORING
+   ========================================================================= */
+function initBreadcrumbLines() {
+  const latlngArr = routeLatLngs.map(p => [p.lat, p.lng]);
+
+  completedLine = L.polyline([], {
+    color: getComputedStyle(document.documentElement).getPropertyValue('--neon-green').trim() || '#39ff14',
+    weight: 6,
+    opacity: 0.95,
+    lineJoin: 'round'
+  }).addTo(map);
+
+  // Starts covering the whole route — nothing completed yet.
+  remainingLine = L.polyline(latlngArr, {
+    color: getComputedStyle(document.documentElement).getPropertyValue('--navy').trim() || '#173fa6',
+    weight: 5,
+    opacity: 0.9,
+    lineJoin: 'round'
+  }).addTo(map);
+}
+
+/* Re-splits the trail into "completed" (behind the runner) and
+   "remaining" (ahead) at the given mile-along-route. Called every time a
+   fresh set of pings is processed, so the map always reflects the
+   latest known position immediately. */
+function updateBreadcrumbRoute(currentMile) {
+  if (!routeLatLngs.length || !cumDist.length || !completedLine || !remainingLine) return;
+
+  const clamped = Math.max(0, Math.min(currentMile, totalRouteMiles));
+  let splitIdx = cumDist.findIndex(d => d >= clamped);
+  if (splitIdx === -1) splitIdx = routeLatLngs.length - 1;
+
+  const splitPoint = mileToLatLng(clamped);
+
+  const completedCoords = routeLatLngs.slice(0, splitIdx).map(p => [p.lat, p.lng]);
+  if (splitPoint) completedCoords.push([splitPoint.lat, splitPoint.lng]);
+
+  const remainingCoords = [];
+  if (splitPoint) remainingCoords.push([splitPoint.lat, splitPoint.lng]);
+  remainingCoords.push(...routeLatLngs.slice(splitIdx).map(p => [p.lat, p.lng]));
+
+  completedLine.setLatLngs(completedCoords);
+  remainingLine.setLatLngs(remainingCoords);
+}
+
+/* =========================================================================
+   LIVE FEED (Garmin inReach KML via Vercel serverless proxy)
    ========================================================================= */
 function isPlaceholderUrl() {
   return !CONFIG.GARMIN_KML_URL || CONFIG.GARMIN_KML_URL.startsWith("PASTE_");
@@ -535,6 +622,9 @@ async function fetchLiveData() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const kmlText = await res.text();
 
+    // Parse the ENTIRE placemark history present in the feed every time,
+    // not just the newest point — this is what lets the activity log
+    // fully repopulate itself from Garmin's own history on every load.
     const points = parseKML(kmlText);
 
     if (!points.length) {
@@ -550,8 +640,7 @@ async function fetchLiveData() {
       return;
     }
 
-    const latest = points[points.length - 1];
-    handleNewPing(latest);
+    handleFullHistory(points);
   } catch (err) {
     console.error('Live feed error:', err);
     // A failed fetch doesn't fabricate data either — the connection
@@ -566,7 +655,8 @@ async function fetchLiveData() {
    Coordinates normally come from <Point><coordinates>, with ExtendedData
    Latitude/Longitude as a fallback; timestamps normally come from
    <TimeStamp><when>, with ExtendedData Time/Time UTC as a fallback.
-   Points the device itself flagged with an invalid GPS fix are dropped. */
+   Points the device itself flagged with an invalid GPS fix are dropped.
+   Returns the FULL history present in the feed, not just the latest. */
 function parseKML(kmlText) {
   const xml = new DOMParser().parseFromString(kmlText, 'text/xml');
 
@@ -695,45 +785,52 @@ function extractExtendedData(placemark) {
 }
 
 /* =========================================================================
-   PING HANDLING + DASHBOARD RENDERING
+   FULL-HISTORY PING PROCESSING + DASHBOARD RENDERING
    ========================================================================= */
-function handleNewPing(point) {
-  const { lat, lng, time, elevationFt, speedMph: feedSpeedMph } = point;
-
-  // Garmin only sends a new point every ~10 minutes, but we poll more
-  // often than that. If the feed hasn't produced a new point since our
-  // last poll, this will be the same timestamp we already have — skip it
-  // so pace math and the activity log are always based on genuinely new
-  // pings, not the same point counted twice.
-  const previous = lastTwoPings[lastTwoPings.length - 1];
-  const isDuplicate = previous && previous.time && time &&
-    previous.time.getTime() === time.getTime();
-
-  if (isDuplicate) {
-    updateConnectionStatus();
-    return;
+/* Processes the ENTIRE set of points parsed from this fetch (which is
+   the feed's full placemark history, not just the newest point). This
+   both drives current position/pace (from the most recent points) and
+   completely rebuilds the persistent activity log from that full
+   history — so a page refresh repopulates the log automatically instead
+   of starting blank. */
+function handleFullHistory(points) {
+  // Dedupe in case the feed repeats a placemark across polls or within
+  // one response (by timestamp, falling back to exact coordinates).
+  const seen = new Set();
+  const deduped = [];
+  for (const p of points) {
+    const key = p.time ? `t:${p.time.getTime()}` : `c:${p.lat},${p.lng}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(p);
   }
+  if (!deduped.length) return;
 
-  const { mile, offsetMiles } = projectToRoute(lat, lng);
+  // Project every point onto the route once.
+  const withMiles = deduped.map(p => {
+    const { mile, offsetMiles } = projectToRoute(p.lat, p.lng);
+    return { ...p, mile, offsetMiles };
+  });
 
-  // Speed: prefer whatever the feed itself reports; if absent, derive it
-  // from the distance-along-route and elapsed time versus the previous
-  // ping (same math as the "Moving Pace" card).
-  let speedMph = feedSpeedMph;
-  if ((speedMph === null || speedMph === undefined) && previous && previous.time && time) {
-    const dtHours = (time - previous.time) / 3600000;
-    const dMiles = mile - previous.mile;
-    if (dtHours > 0.0003 && dMiles > 0) {
-      speedMph = dMiles / dtHours;
+  // Fill in a computed speed for any point the feed itself didn't report
+  // a value for, using the previous point's distance/time — same math as
+  // the "Moving Pace" card. This makes every row in the log usable, not
+  // just whichever ones Garmin happened to attach a Velocity field to.
+  for (let i = 1; i < withMiles.length; i++) {
+    const p = withMiles[i], prev = withMiles[i - 1];
+    if ((p.speedMph === null || p.speedMph === undefined) && prev.time && p.time) {
+      const dtHours = (p.time - prev.time) / 3600000;
+      const dMiles = p.mile - prev.mile;
+      if (dtHours > 0.0003 && dMiles > 0) p.speedMph = dMiles / dtHours;
     }
   }
 
-  const ping = { mile, time, lat, lng, offsetMiles, elevationFt, speedMph };
-  lastTwoPings.push(ping);
-  if (lastTwoPings.length > 2) lastTwoPings.shift();
+  // Current position + pace still only need the last two points.
+  lastTwoPings = withMiles.slice(-2);
+  const current = withMiles[withMiles.length - 1];
 
-  lastUpdateTime = time;
-  updateDot(lat, lng);
+  lastUpdateTime = current.time;
+  updateDot(current.lat, current.lng);
 
   // On the very first ping we ever receive, make sure it's actually
   // visible — the map starts zoomed tight to the trail loop, so a ping
@@ -743,12 +840,22 @@ function handleNewPing(point) {
     hasCenteredOnFirstFix = true;
     const bounds = routeBounds
       ? L.latLngBounds([routeBounds.getSouthWest(), routeBounds.getNorthEast()])
-      : L.latLngBounds([[lat, lng], [lat, lng]]);
-    bounds.extend([lat, lng]);
+      : L.latLngBounds([[current.lat, current.lng], [current.lat, current.lng]]);
+    bounds.extend([current.lat, current.lng]);
     map.fitBounds(bounds, { padding: [40, 40] });
   }
 
-  addLogEntry(ping);
+  // Rebuild the ENTIRE activity log fresh from the full feed history on
+  // every fetch — this is what makes a page refresh repopulate
+  // automatically instead of starting blank. Capped at MAX_LOG_ENTRIES
+  // for DOM/performance reasons; the underlying parse still covers the
+  // whole feed regardless of the cap.
+  activityLog.length = 0;
+  for (let i = withMiles.length - 1; i >= 0 && activityLog.length < MAX_LOG_ENTRIES; i--) {
+    activityLog.push(withMiles[i]);
+  }
+  renderActivityLog();
+
   renderDashboard();
   updateConnectionStatus();
 }
@@ -770,6 +877,19 @@ function renderDashboard() {
 
   // --- Current mile ---
   document.getElementById('mileValue').textContent = current.mile.toFixed(2) + ' mi';
+
+  // --- Breadcrumb recoloring — recalculated on every render pass, so
+  // every new ping immediately re-splits the trail on the map. ---
+  updateBreadcrumbRoute(current.mile);
+
+  // --- Live progress bar ---
+  const finishMile = milestones[milestones.length - 1].mile;
+  const completedMiles = Math.min(Math.max(current.mile, 0), finishMile);
+  const remainingMiles = Math.max(finishMile - current.mile, 0);
+  const progressPct = finishMile > 0 ? Math.min(100, (completedMiles / finishMile) * 100) : 0;
+  document.getElementById('progressBarFill').style.width = progressPct.toFixed(1) + '%';
+  document.getElementById('progressText').textContent =
+    `${completedMiles.toFixed(1)} mi completed — ${remainingMiles.toFixed(1)} mi remaining`;
 
   // Lock the race clock the moment the tracking dot reaches the final
   // finish-line milestone. Uses the actual KML ping timestamp (not wall
@@ -868,14 +988,8 @@ function updateAgoLabel() {
 }
 
 /* =========================================================================
-   LIVE ACTIVITY LOG
+   LIVE ACTIVITY LOG (rendering only — content is rebuilt in handleFullHistory)
    ========================================================================= */
-function addLogEntry(ping) {
-  activityLog.unshift(ping);
-  if (activityLog.length > MAX_LOG_ENTRIES) activityLog.length = MAX_LOG_ENTRIES;
-  renderActivityLog();
-}
-
 function renderActivityLog() {
   const container = document.getElementById('activityLogList');
   if (!activityLog.length) {
