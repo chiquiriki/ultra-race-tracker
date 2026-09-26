@@ -794,16 +794,39 @@ function extractExtendedData(placemark) {
    history — so a page refresh repopulates the log automatically instead
    of starting blank. */
 function handleFullHistory(points) {
+  // Only real race-time positions should ever reach the dashboard — a
+  // ping from before the official start (a test ping from home, a device
+  // check the night before, etc.) should never count toward mileage,
+  // pace, the progress bar, or the activity log. Filtered out here, in
+  // one place, so every downstream calculation is automatically clean.
+  const raceStartTime = new Date(CONFIG.RACE_START_TIME);
+  const raceStartValid = !isNaN(raceStartTime.getTime());
+  let filteredPreRaceCount = 0;
+
   // Dedupe in case the feed repeats a placemark across polls or within
   // one response (by timestamp, falling back to exact coordinates).
   const seen = new Set();
   const deduped = [];
   for (const p of points) {
+    // Skip anything timestamped before race start. A point with no
+    // timestamp at all can't be confirmed as in-race, so it's excluded
+    // too once a valid start time is configured — better to drop an
+    // ambiguous point than let a pre-race ping quietly inflate mileage.
+    if (raceStartValid && (!p.time || p.time.getTime() < raceStartTime.getTime())) {
+      filteredPreRaceCount++;
+      continue;
+    }
+
     const key = p.time ? `t:${p.time.getTime()}` : `c:${p.lat},${p.lng}`;
     if (seen.has(key)) continue;
     seen.add(key);
     deduped.push(p);
   }
+
+  if (filteredPreRaceCount > 0) {
+    console.log(`Filtered ${filteredPreRaceCount} pre-race ping(s) (before RACE_START_TIME) out of mile/pace/log calculations.`);
+  }
+
   if (!deduped.length) return;
 
   // Project every point onto the route once.
