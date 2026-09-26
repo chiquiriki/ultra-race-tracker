@@ -1,0 +1,993 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Patriot Loop — Live Crew Tracker</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<style>
+  :root{
+    --bg: #0d0f12;
+    --panel: #15181d;
+    --panel-2: #1d2127;
+    --border: #262b33;
+    --text: #eef0f2;
+    --muted: #8b93a1;
+    --red: #e2372f;
+    --red-dim: #7a231f;
+    --green: #3ddc84;
+    --amber: #f2b705;
+    --blue: #2f8bff;
+  }
+  *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body{
+    height:100%; margin:0; padding:0;
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  #app{
+    display:flex; flex-direction:column;
+    height:100vh; height:100dvh; overflow:hidden;
+  }
+
+  /* ---------- Header ---------- */
+  header{
+    flex:0 0 auto;
+    display:flex; align-items:center; justify-content:space-between;
+    padding:10px 14px;
+    background:linear-gradient(180deg,#181b20,#15181d);
+    border-bottom:1px solid var(--border);
+    z-index:1000;
+  }
+  header .title{
+    display:flex; flex-direction:column; line-height:1.15;
+  }
+  header .title strong{ font-size:15px; letter-spacing:.2px; }
+  header .title span{ font-size:11px; color:var(--muted); }
+  .status-badge{
+    display:flex; align-items:center; gap:6px;
+    font-size:11px; font-weight:600; letter-spacing:.3px;
+    padding:5px 10px; border-radius:20px;
+    background:var(--panel-2); border:1px solid var(--border);
+  }
+  .status-dot{
+    width:8px; height:8px; border-radius:50%;
+    background:var(--muted);
+  }
+  .status-dot.live{ background:var(--green); box-shadow:0 0 8px var(--green); animation:pulse 1.8s infinite; }
+  .status-dot.stale{ background:var(--amber); box-shadow:0 0 8px var(--amber); animation:flashStale 1s infinite; }
+  @keyframes pulse{
+    0%{ opacity:1; } 50%{ opacity:.4; } 100%{ opacity:1; }
+  }
+  @keyframes flashStale{
+    0%,100%{ opacity:1; } 50%{ opacity:.25; }
+  }
+
+  /* ---------- Map ---------- */
+  #map{ flex:1 1 auto; min-height:0; background:#0a0c0e; }
+  .leaflet-container{ background:#0a0c0e; }
+
+  .milestone-label{
+    background:rgba(13,15,18,0.85);
+    border:1px solid var(--border);
+    color:var(--text);
+    font-size:10px; font-weight:600;
+    padding:2px 6px; border-radius:6px;
+    white-space:nowrap;
+  }
+
+  /* ---------- Dashboard ---------- */
+  #dash{
+    flex:0 0 auto;
+    background:var(--panel);
+    border-top:1px solid var(--border);
+    padding:10px 12px calc(10px + env(safe-area-inset-bottom,0px));
+    z-index:1000;
+    max-height:60vh;
+    overflow-y:auto;
+  }
+
+  /* ---------- Connection status banner ---------- */
+  .status-banner{
+    display:flex; align-items:center;
+    font-size:12.5px; font-weight:600; line-height:1.35;
+    padding:10px 12px;
+    border-radius:10px;
+    border:1px solid var(--border);
+    background:var(--panel-2);
+    margin-bottom:10px;
+  }
+  .status-banner.initial{ border-color:var(--blue); color:var(--text); }
+  .status-banner.active{ border-color:var(--green); color:var(--text); }
+  .status-banner.stale{
+    border-color:var(--amber); color:var(--text);
+    animation:flashStale 1.2s infinite;
+  }
+
+  /* ---------- Race clock ---------- */
+  .clock-row{
+    display:flex; align-items:center; justify-content:space-between;
+    background:linear-gradient(135deg,#1d1012,#15181d);
+    border:1px solid var(--red-dim);
+    border-radius:12px;
+    padding:10px 14px;
+    margin-bottom:10px;
+  }
+  .clock-label{
+    font-size:10px; text-transform:uppercase; letter-spacing:.6px;
+    color:var(--muted); font-weight:700;
+  }
+  .clock-value{
+    font-size:26px; font-weight:800; letter-spacing:.5px;
+    color:var(--red); font-variant-numeric:tabular-nums;
+    line-height:1;
+  }
+  .clock-row.finished{ border-color:var(--green); }
+  .clock-row.finished .clock-value{ color:var(--green); }
+  .clock-row .clock-left{ display:flex; flex-direction:column; gap:4px; }
+
+  .updated-row{
+    display:flex; justify-content:space-between; align-items:baseline;
+    padding:0 2px 8px 2px; margin-bottom:8px;
+    border-bottom:1px solid var(--border);
+  }
+  .updated-row .ago{ font-size:13px; font-weight:600; color:var(--text); }
+  .updated-row .abs{ font-size:11px; color:var(--muted); }
+
+  .stat-grid{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:8px;
+  }
+  .stat-card{
+    background:var(--panel-2);
+    border:1px solid var(--border);
+    border-radius:10px;
+    padding:9px 11px;
+    min-width:0;
+  }
+  .stat-card.wide{ grid-column:1 / -1; }
+  .stat-label{
+    font-size:10px; text-transform:uppercase; letter-spacing:.5px;
+    color:var(--muted); font-weight:700; margin-bottom:3px;
+  }
+  .stat-value{
+    font-size:19px; font-weight:700; color:var(--text);
+    line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .stat-value.accent{ color:var(--red); }
+  .stat-sub{ font-size:11px; color:var(--muted); margin-top:2px; }
+
+  .dot-icon{
+    width:16px; height:16px; border-radius:50%;
+    background:var(--blue);
+    border:3px solid #ffffff;
+    box-shadow:0 0 0 3px rgba(47,139,255,0.35), 0 0 10px rgba(47,139,255,0.6);
+  }
+
+  /* ---------- Live Activity Log ---------- */
+  .log-card{ padding-bottom:6px; }
+  .log-container{
+    background:#050607;
+    border:1px solid #1a1d22;
+    border-radius:8px;
+    height:150px;
+    overflow-y:scroll;
+    padding:6px 8px;
+    margin-top:4px;
+    font-family:"SF Mono",SFMono-Regular,ui-monospace,Menlo,Consolas,monospace;
+    font-size:11px;
+    line-height:1.7;
+  }
+  .log-row{
+    display:flex; flex-wrap:wrap; gap:5px;
+    padding:3px 0;
+    border-bottom:1px solid #14171b;
+    white-space:nowrap;
+  }
+  .log-row:last-child{ border-bottom:none; }
+  .log-time{ color:var(--green); font-weight:700; }
+  .log-sep{ color:#2a2f37; }
+  .log-field{ color:#c4cad3; }
+  .log-empty{ color:var(--muted); padding:8px 2px; font-style:italic; }
+
+  @media (min-width:640px){
+    #dash{ padding-left:16px; padding-right:16px; }
+    .stat-grid{ grid-template-columns:repeat(4,1fr); }
+    .stat-card.wide{ grid-column:auto; }
+    .log-card{ grid-column:1 / -1; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <header>
+    <div class="title">
+      <strong>Percy Warner Patriot Loop</strong>
+      <span>Crew Live Tracker</span>
+    </div>
+    <div class="status-badge">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">Waiting</span>
+    </div>
+  </header>
+
+  <div id="map"></div>
+
+  <div id="dash">
+    <div class="status-banner initial" id="statusBanner">
+      🛰️ Waiting for Garmin Signal (Device has not broadcasted its first point yet).
+    </div>
+
+    <div class="clock-row" id="clockRow">
+      <div class="clock-left">
+        <div class="clock-label" id="clockLabel">Elapsed Time</div>
+      </div>
+      <div class="clock-value" id="clockValue">00:00:00</div>
+    </div>
+
+    <div class="updated-row">
+      <span class="ago" id="agoText">Waiting for first ping…</span>
+      <span class="abs" id="absText">—</span>
+    </div>
+
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-label">Current Mile</div>
+        <div class="stat-value accent" id="mileValue">—</div>
+        <div class="stat-sub" id="mileSub">of 12.35 mi loop</div>
+      </div>
+
+      <div class="stat-card">
+        <div class="stat-label">Moving Pace</div>
+        <div class="stat-value" id="paceValue">—</div>
+        <div class="stat-sub">min / mile</div>
+      </div>
+
+      <div class="stat-card wide">
+        <div class="stat-label">Next Milestone</div>
+        <div class="stat-value" id="nextName">—</div>
+        <div class="stat-sub" id="nextSub">—</div>
+      </div>
+
+      <div class="stat-card wide">
+        <div class="stat-label">ETA to Next Milestone</div>
+        <div class="stat-value" id="etaValue">—</div>
+        <div class="stat-sub" id="etaSub">based on current moving pace</div>
+      </div>
+
+      <div class="stat-card wide log-card">
+        <div class="stat-label">Live Activity Log</div>
+        <div class="log-container" id="activityLogList">
+          <div class="log-empty">No pings received yet.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+/* =========================================================================
+   CONFIG — edit before uploading
+   ========================================================================= */
+const CONFIG = {
+  // Official race/run start time. Edit this before race day.
+  // ISO 8601 local time, e.g. "2026-10-23T07:00:00"
+  RACE_START_TIME: "2026-09-25T17:05:00",
+
+  // Paste your Garmin inReach MapShare KML feed URL here.
+  // e.g. "https://share.garmin.com/Feed/Share/YourMapShareID"
+  GARMIN_KML_URL: "https://share.garmin.com/Feed/Share/CHIQUITEST?d1=2026-01-01T00:00:00Z",
+
+  // Same-origin Vercel serverless function (see api/garmin-proxy.js) that
+  // fetches the Garmin feed server-side. This replaces routing through a
+  // public CORS proxy (corsproxy.io, allorigins.win, etc.) — all of
+  // which proved unreliable (401s, missing CORS headers) during testing.
+  // Because this request stays on your own domain, no CORS policy
+  // applies at all.
+  CORS_PROXY_PREFIX: "/api/garmin-proxy?url=",
+
+  // GPX file, same folder as this HTML file.
+  GPX_FILE: "percy.gpx",
+
+  // How often to poll the live feed (seconds).
+  REFRESH_INTERVAL_SECONDS: 60,
+
+  // A ping older than this (minutes) is treated as a stale/interrupted
+  // signal rather than a live one. The dot stays put at its last known
+  // position — nothing is simulated or guessed.
+  STALE_THRESHOLD_MINUTES: 20
+};
+
+/* Aid station / milestone mile markers along the loop.
+   Swap these out freely for a different trail — the math (finish
+   detection, next-milestone lookup, ETA) all derives from this array. */
+const milestones = [
+  { name: "Edwin Warner Nature Center (Start)", mile: 0.0 },
+  { name: "Blue Loop / Cane Connector Junction", mile: 2.7 },
+  { name: "Red Loop Halfway Mark", mile: 5.4 },
+  { name: "Bottom of Allée Steps (The Water)", mile: 7.7 },
+  { name: "Percy Warner Woods (White Loop Completion)", mile: 9.7 },
+  { name: "Edwin Warner Nature Center (Finish)", mile: 12.35 }
+];
+
+/* =========================================================================
+   STATE
+   ========================================================================= */
+let map;
+let routeLatLngs = [];   // [{lat,lng}, ...] in GPX order
+let cumDist = [];        // cumulative miles at each routeLatLngs index
+let routeLatRef = 0;     // avg latitude, used for local planar projection
+let totalRouteMiles = 0;
+let routeBounds = null;  // Leaflet bounds of the trail itself
+let hasCenteredOnFirstFix = false; // only auto-pan/zoom once, on the first ping
+
+let liveDotMarker = null;
+let lastTwoPings = [];   // [{mile, time, lat, lng, offsetMiles, elevationFt, speedMph}], oldest first, max length 2
+let lastUpdateTime = null;
+let feedTimer = null;
+
+let raceFinished = false;
+let finishElapsedMs = null; // locked elapsed time once the finish milestone is reached
+
+const activityLog = [];        // newest-first array of processed pings
+const MAX_LOG_ENTRIES = 250;
+
+/* =========================================================================
+   INIT
+   ========================================================================= */
+init();
+
+async function init() {
+  map = L.map('map', { zoomControl: true, attributionControl: true })
+          .setView([36.25, -87.0], 13);
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+
+  try {
+    await loadRoute();
+  } catch (err) {
+    console.error("Failed to load GPX route:", err);
+    document.getElementById('mileSub').textContent = "Couldn't load " + CONFIG.GPX_FILE;
+  }
+
+  addMilestoneMarkers();
+
+  // Kick off the live feed loop
+  fetchLiveData();
+  feedTimer = setInterval(fetchLiveData, CONFIG.REFRESH_INTERVAL_SECONDS * 1000);
+
+  // Tick the "Updated Xs ago" label, the race clock, and the connection
+  // status banner every second — status needs to keep ticking toward
+  // "stale" even between polls, without waiting on the next fetch.
+  setInterval(updateAgoLabel, 1000);
+  setInterval(updateRaceClock, 1000);
+  setInterval(updateConnectionStatus, 1000);
+  updateRaceClock();
+  updateConnectionStatus();
+}
+
+/* =========================================================================
+   ROUTE LOADING (GPX) + DISTANCE-ALONG-ROUTE MODEL
+   ========================================================================= */
+async function loadRoute() {
+  const res = await fetch(CONFIG.GPX_FILE, { cache: 'no-store' });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  const gpxText = await res.text();
+
+  const xml = new DOMParser().parseFromString(gpxText, 'application/xml');
+  const trkpts = Array.from(xml.getElementsByTagName('trkpt'));
+
+  if (!trkpts.length) throw new Error('No <trkpt> elements found in GPX');
+
+  routeLatLngs = trkpts.map(pt => ({
+    lat: parseFloat(pt.getAttribute('lat')),
+    lng: parseFloat(pt.getAttribute('lon'))
+  }));
+
+  // Cumulative distance (miles) along the track
+  cumDist = [0];
+  for (let i = 1; i < routeLatLngs.length; i++) {
+    const d = haversineMiles(
+      routeLatLngs[i - 1].lat, routeLatLngs[i - 1].lng,
+      routeLatLngs[i].lat, routeLatLngs[i].lng
+    );
+    cumDist.push(cumDist[i - 1] + d);
+  }
+  totalRouteMiles = cumDist[cumDist.length - 1];
+  routeLatRef = routeLatLngs.reduce((s, p) => s + p.lat, 0) / routeLatLngs.length;
+
+  document.getElementById('mileSub').textContent =
+    `of ${totalRouteMiles.toFixed(1)} mi loop`;
+
+  // Draw the trail — high-visibility red line
+  const latlngArr = routeLatLngs.map(p => [p.lat, p.lng]);
+  const trail = L.polyline(latlngArr, {
+    color: '#e2372f',
+    weight: 5,
+    opacity: 0.95,
+    lineJoin: 'round'
+  }).addTo(map);
+
+  map.fitBounds(trail.getBounds(), { padding: [24, 24] });
+  routeBounds = trail.getBounds();
+}
+
+function addMilestoneMarkers() {
+  if (!routeLatLngs.length) return;
+  milestones.forEach(m => {
+    const pos = mileToLatLng(m.mile);
+    if (!pos) return;
+    L.circleMarker([pos.lat, pos.lng], {
+      radius: 6,
+      color: '#ffffff',
+      weight: 2,
+      fillColor: '#e2372f',
+      fillOpacity: 1
+    }).addTo(map).bindTooltip(
+      `<div class="milestone-label">${m.name} — mi ${m.mile.toFixed(1)}</div>`,
+      { permanent: false, direction: 'top', className: 'milestone-tooltip-wrap' }
+    );
+  });
+}
+
+/* Haversine distance in miles between two lat/lng points */
+function haversineMiles(lat1, lon1, lat2, lon2) {
+  const R = 3958.8; // earth radius, miles
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 +
+            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+/* Project a lat/lng onto the nearest point on the route polyline.
+   Returns both the distance-along-route in miles AND how far off the
+   actual trail line the raw ping is (offsetMiles). Uses a local planar
+   approximation (fine for a local loop) to find the closest segment +
+   interpolation fraction, then reports real haversine mileage for both. */
+function projectToRoute(lat, lng) {
+  if (routeLatLngs.length < 2) return { mile: 0, offsetMiles: 0 };
+
+  const toXY = (la, ln) => ({
+    x: ln * Math.cos(routeLatRef * Math.PI / 180),
+    y: la
+  });
+  const p = toXY(lat, lng);
+
+  let best = { distSq: Infinity, segIndex: 0, t: 0 };
+
+  for (let i = 0; i < routeLatLngs.length - 1; i++) {
+    const A = routeLatLngs[i], B = routeLatLngs[i + 1];
+    const a = toXY(A.lat, A.lng), b = toXY(B.lat, B.lng);
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const lenSq = dx * dx + dy * dy;
+    let t = lenSq === 0 ? 0 : ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq;
+    t = Math.max(0, Math.min(1, t));
+
+    const footX = a.x + t * dx, footY = a.y + t * dy;
+    const distSq = (p.x - footX) ** 2 + (p.y - footY) ** 2;
+
+    if (distSq < best.distSq) {
+      best = { distSq, segIndex: i, t };
+    }
+  }
+
+  const A = routeLatLngs[best.segIndex], B = routeLatLngs[best.segIndex + 1];
+  const footLat = A.lat + best.t * (B.lat - A.lat);
+  const footLng = A.lng + best.t * (B.lng - A.lng);
+  const offsetMiles = haversineMiles(lat, lng, footLat, footLng);
+
+  const segMiles = cumDist[best.segIndex + 1] - cumDist[best.segIndex];
+  const mile = cumDist[best.segIndex] + best.t * segMiles;
+
+  return { mile, offsetMiles };
+}
+
+/* Inverse of the above — given a mile-along-route, return a lat/lng.
+   Used to place milestone markers. */
+function mileToLatLng(mile) {
+  if (!cumDist.length) return null;
+  const clamped = Math.max(0, Math.min(mile, totalRouteMiles));
+  for (let i = 0; i < cumDist.length - 1; i++) {
+    if (clamped >= cumDist[i] && clamped <= cumDist[i + 1]) {
+      const segMiles = cumDist[i + 1] - cumDist[i];
+      const t = segMiles === 0 ? 0 : (clamped - cumDist[i]) / segMiles;
+      const A = routeLatLngs[i], B = routeLatLngs[i + 1];
+      return {
+        lat: A.lat + t * (B.lat - A.lat),
+        lng: A.lng + t * (B.lng - A.lng)
+      };
+    }
+  }
+  const last = routeLatLngs[routeLatLngs.length - 1];
+  return { lat: last.lat, lng: last.lng };
+}
+
+/* =========================================================================
+   LIVE FEED (Garmin inReach KML via CORS proxy)
+   ========================================================================= */
+function isPlaceholderUrl() {
+  return !CONFIG.GARMIN_KML_URL || CONFIG.GARMIN_KML_URL.startsWith("PASTE_");
+}
+
+async function fetchLiveData() {
+  if (isPlaceholderUrl()) {
+    console.warn('GARMIN_KML_URL is still unset — paste your Garmin inReach feed URL into CONFIG.');
+    updateConnectionStatus();
+    return;
+  }
+
+  try {
+    const proxied = CONFIG.CORS_PROXY_PREFIX + encodeURIComponent(CONFIG.GARMIN_KML_URL);
+    const res = await fetch(proxied, { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const kmlText = await res.text();
+
+    const points = parseKML(kmlText);
+
+    if (!points.length) {
+      // Empty response / no coordinates yet — this is the INITIAL state.
+      // No simulation, no fabricated movement. Just keep waiting.
+      console.warn(
+        `Fetched KML (${kmlText.length} chars) but found 0 usable coordinate points. ` +
+        `Check the "KML parsed:" log line above for how many <Placemark> elements were found — ` +
+        `if that count is also 0, the proxy or feed URL is the issue; if it's >0 but usable points is 0, ` +
+        `every point was missing coordinates/lat-lng or was flagged with an invalid GPS fix.`
+      );
+      updateConnectionStatus();
+      return;
+    }
+
+    const latest = points[points.length - 1];
+    handleNewPing(latest);
+  } catch (err) {
+    console.error('Live feed error:', err);
+    // A failed fetch doesn't fabricate data either — the connection
+    // status engine will report INITIAL or STALE based on whatever the
+    // last genuinely-received ping was (or "waiting" if there's none).
+    updateConnectionStatus();
+  }
+}
+
+/* Parse a Garmin inReach MapShare KML export into an array of
+   {lat, lng, time, elevationFt, speedMph} points, sorted oldest -> newest.
+   Coordinates normally come from <Point><coordinates>, with ExtendedData
+   Latitude/Longitude as a fallback; timestamps normally come from
+   <TimeStamp><when>, with ExtendedData Time/Time UTC as a fallback.
+   Points the device itself flagged with an invalid GPS fix are dropped. */
+function parseKML(kmlText) {
+  const xml = new DOMParser().parseFromString(kmlText, 'text/xml');
+
+  if (xml.getElementsByTagName('parsererror').length) {
+    console.error(
+      'KML parse error — the fetched response was not valid XML (likely mangled by the CORS proxy). ' +
+      'First 300 chars of what was received:', kmlText.slice(0, 300)
+    );
+    return [];
+  }
+
+  const placemarks = Array.from(xml.getElementsByTagName('Placemark'));
+
+  const points = placemarks.map(pm => {
+    const extended = extractExtendedData(pm);
+
+    // Skip pings the device itself flagged as an invalid GPS fix.
+    if (extended.validGpsFix && /^(false|no|0)$/i.test(extended.validGpsFix.trim())) {
+      return null;
+    }
+
+    let lat = null, lng = null, coordAltMeters = null;
+    const coordEl = pm.querySelector('Point coordinates') || pm.querySelector('coordinates');
+    if (coordEl && coordEl.textContent.trim()) {
+      const parts = coordEl.textContent.trim().split(',');
+      lng = parseFloat(parts[0]);
+      lat = parseFloat(parts[1]);
+      coordAltMeters = parts.length > 2 ? parseFloat(parts[2]) : null;
+    }
+    // Fall back to ExtendedData Latitude/Longitude if <Point> is missing
+    // or didn't parse cleanly.
+    if ((lat === null || isNaN(lat)) && extended.latitude !== null) lat = extended.latitude;
+    if ((lng === null || isNaN(lng)) && extended.longitude !== null) lng = extended.longitude;
+    if (lat === null || lng === null || isNaN(lat) || isNaN(lng)) return null;
+
+    // Prefer <TimeStamp><when>, fall back to the ExtendedData Time/Time UTC field.
+    const whenEl = pm.querySelector('TimeStamp > when');
+    let time = whenEl ? new Date(whenEl.textContent.trim()) : null;
+    if ((!time || isNaN(time.getTime())) && extended.timeRaw) {
+      time = new Date(extended.timeRaw);
+    }
+    if (time && isNaN(time.getTime())) time = null;
+
+    const altMeters = (extended.elevationMeters !== null && extended.elevationMeters !== undefined)
+      ? extended.elevationMeters
+      : coordAltMeters;
+    const elevationFt = (altMeters !== null && altMeters !== undefined && !isNaN(altMeters))
+      ? altMeters * 3.28084
+      : null;
+
+    return { lat, lng, time, elevationFt, speedMph: extended.speedMph };
+  }).filter(Boolean);
+
+  points.sort((a, b) => (a.time ? a.time.getTime() : 0) - (b.time ? b.time.getTime() : 0));
+
+  console.log(`KML parsed: ${placemarks.length} <Placemark> element(s) found, ${points.length} usable point(s) after filtering.`);
+  return points;
+}
+
+/* Best-effort extraction of fields from a Placemark's <ExtendedData>
+   block. Garmin inReach exports use <Data name="X"><value>Y</value></Data>
+   pairs (confirmed field names: Id, Time, Time UTC, Name, Map Display
+   Name, Device Type, IMEI, Incident Id, Latitude, Longitude, Elevation,
+   Velocity, Course, Valid GPS Fix, In Emergency, Text, Note, Event,
+   Device Identifier, SpatialRefSystem) — but some KML exporters instead
+   use <SchemaData><SimpleData name="X">Y</SimpleData></SchemaData>, so
+   both shapes are matched here. Latitude/Longitude/Time act as fallbacks
+   if the Placemark's own <Point>/<TimeStamp> is missing or unparsable. */
+function extractExtendedData(placemark) {
+  const result = {
+    elevationMeters: null,
+    speedMph: null,
+    latitude: null,
+    longitude: null,
+    timeRaw: null,
+    validGpsFix: null
+  };
+
+  const assign = (nameLc, raw) => {
+    if (!raw) return;
+    if (nameLc.includes('elevation') && result.elevationMeters === null) {
+      const num = parseFloat(raw);
+      if (!isNaN(num)) {
+        result.elevationMeters = /ft|feet/i.test(raw) ? num / 3.28084 : num;
+      }
+    }
+    if ((nameLc.includes('velocity') || nameLc.includes('speed')) && result.speedMph === null) {
+      const num = parseFloat(raw);
+      if (!isNaN(num)) {
+        // Assumes mph unless explicitly labeled km/h — adjust here if
+        // your account reports speed in km/h by default.
+        result.speedMph = /km\/h|kph/i.test(raw) ? num * 0.621371 : num;
+      }
+    }
+    if (nameLc === 'latitude' && result.latitude === null) {
+      const num = parseFloat(raw);
+      if (!isNaN(num)) result.latitude = num;
+    }
+    if (nameLc === 'longitude' && result.longitude === null) {
+      const num = parseFloat(raw);
+      if (!isNaN(num)) result.longitude = num;
+    }
+    if ((nameLc === 'time utc' || nameLc === 'time') && result.timeRaw === null) {
+      result.timeRaw = raw;
+    }
+    if (nameLc.includes('valid gps fix') && result.validGpsFix === null) {
+      result.validGpsFix = raw;
+    }
+  };
+
+  // Shape 1: <Data name="X"><value>Y</value></Data>
+  Array.from(placemark.querySelectorAll('ExtendedData Data')).forEach(d => {
+    const nameLc = (d.getAttribute('name') || '').trim().toLowerCase();
+    const valueEl = d.querySelector('value');
+    const raw = (valueEl ? valueEl.textContent : d.textContent).trim();
+    assign(nameLc, raw);
+  });
+
+  // Shape 2: <SchemaData><SimpleData name="X">Y</SimpleData></SchemaData>
+  Array.from(placemark.querySelectorAll('ExtendedData SimpleData')).forEach(el => {
+    const nameLc = (el.getAttribute('name') || '').trim().toLowerCase();
+    assign(nameLc, el.textContent.trim());
+  });
+
+  return result;
+}
+
+/* =========================================================================
+   PING HANDLING + DASHBOARD RENDERING
+   ========================================================================= */
+function handleNewPing(point) {
+  const { lat, lng, time, elevationFt, speedMph: feedSpeedMph } = point;
+
+  // Garmin only sends a new point every ~10 minutes, but we poll more
+  // often than that. If the feed hasn't produced a new point since our
+  // last poll, this will be the same timestamp we already have — skip it
+  // so pace math and the activity log are always based on genuinely new
+  // pings, not the same point counted twice.
+  const previous = lastTwoPings[lastTwoPings.length - 1];
+  const isDuplicate = previous && previous.time && time &&
+    previous.time.getTime() === time.getTime();
+
+  if (isDuplicate) {
+    updateConnectionStatus();
+    return;
+  }
+
+  const { mile, offsetMiles } = projectToRoute(lat, lng);
+
+  // Speed: prefer whatever the feed itself reports; if absent, derive it
+  // from the distance-along-route and elapsed time versus the previous
+  // ping (same math as the "Moving Pace" card).
+  let speedMph = feedSpeedMph;
+  if ((speedMph === null || speedMph === undefined) && previous && previous.time && time) {
+    const dtHours = (time - previous.time) / 3600000;
+    const dMiles = mile - previous.mile;
+    if (dtHours > 0.0003 && dMiles > 0) {
+      speedMph = dMiles / dtHours;
+    }
+  }
+
+  const ping = { mile, time, lat, lng, offsetMiles, elevationFt, speedMph };
+  lastTwoPings.push(ping);
+  if (lastTwoPings.length > 2) lastTwoPings.shift();
+
+  lastUpdateTime = time;
+  updateDot(lat, lng);
+
+  // On the very first ping we ever receive, make sure it's actually
+  // visible — the map starts zoomed tight to the trail loop, so a ping
+  // from off-course would otherwise land off-screen. Only done once so
+  // it doesn't fight the crew's map view later.
+  if (!hasCenteredOnFirstFix) {
+    hasCenteredOnFirstFix = true;
+    const bounds = routeBounds
+      ? L.latLngBounds([routeBounds.getSouthWest(), routeBounds.getNorthEast()])
+      : L.latLngBounds([[lat, lng], [lat, lng]]);
+    bounds.extend([lat, lng]);
+    map.fitBounds(bounds, { padding: [40, 40] });
+  }
+
+  addLogEntry(ping);
+  renderDashboard();
+  updateConnectionStatus();
+}
+
+function updateDot(lat, lng) {
+  if (!liveDotMarker) {
+    liveDotMarker = L.marker([lat, lng], {
+      icon: L.divIcon({ className: '', html: '<div class="dot-icon"></div>', iconSize: [16, 16] }),
+      zIndexOffset: 1000
+    }).addTo(map);
+  } else {
+    liveDotMarker.setLatLng([lat, lng]);
+  }
+}
+
+function renderDashboard() {
+  if (!lastTwoPings.length) return;
+  const current = lastTwoPings[lastTwoPings.length - 1];
+
+  // --- Current mile ---
+  document.getElementById('mileValue').textContent = current.mile.toFixed(2) + ' mi';
+
+  // Lock the race clock the moment the tracking dot reaches the final
+  // finish-line milestone. Uses the actual KML ping timestamp (not wall
+  // clock) so the locked "Finish Time" reflects real GPS time.
+  const finishMilestone = milestones[milestones.length - 1];
+  const FINISH_TOLERANCE_MILES = 0.05;
+  if (!raceFinished && current.mile >= finishMilestone.mile - FINISH_TOLERANCE_MILES) {
+    const startTime = new Date(CONFIG.RACE_START_TIME);
+    if (!isNaN(startTime.getTime()) && current.time) {
+      raceFinished = true;
+      finishElapsedMs = current.time.getTime() - startTime.getTime();
+      updateRaceClock();
+    }
+  }
+
+  const OFF_ROUTE_THRESHOLD_MILES = 0.25;
+  const mileSubEl = document.getElementById('mileSub');
+  if (current.offsetMiles !== undefined && current.offsetMiles > OFF_ROUTE_THRESHOLD_MILES) {
+    mileSubEl.textContent = `⚠ ${current.offsetMiles.toFixed(1)} mi from trail — off-route ping`;
+  } else {
+    mileSubEl.textContent = `of ${totalRouteMiles.toFixed(1)} mi loop`;
+  }
+
+  // --- Next milestone ---
+  const next = milestones.find(m => m.mile > current.mile + 0.001);
+  if (next) {
+    const remaining = next.mile - current.mile;
+    document.getElementById('nextName').textContent = next.name;
+    document.getElementById('nextSub').textContent =
+      remaining.toFixed(2) + ' mi remaining';
+  } else {
+    document.getElementById('nextName').textContent = milestones[milestones.length - 1].name;
+    document.getElementById('nextSub').textContent = 'Loop complete';
+  }
+
+  // --- Pace (from last two distinct pings) ---
+  const haveTwoPings = lastTwoPings.length === 2;
+  let paceMph = null;
+
+  if (haveTwoPings) {
+    const [p1, p2] = lastTwoPings;
+    const dtHours = (p2.time - p1.time) / 3600000;
+    const dMiles = p2.mile - p1.mile;
+    if (dtHours > 0.0003 && dMiles > 0) { // ignore near-zero intervals / noise
+      paceMph = dMiles / dtHours;
+    }
+  }
+
+  if (paceMph && paceMph > 0.1) {
+    const minPerMile = 60 / paceMph;
+    const min = Math.floor(minPerMile);
+    const sec = Math.round((minPerMile - min) * 60);
+    document.getElementById('paceValue').textContent = `${min}:${sec.toString().padStart(2, '0')}`;
+  } else if (!haveTwoPings) {
+    document.getElementById('paceValue').textContent = 'Calculating...';
+  } else {
+    document.getElementById('paceValue').textContent = '—';
+  }
+
+  // --- ETA to next milestone ---
+  if (paceMph && paceMph > 0.1 && next) {
+    const remaining = next.mile - current.mile;
+    const hoursOut = remaining / paceMph;
+    const eta = new Date(Date.now() + hoursOut * 3600000);
+    document.getElementById('etaValue').textContent =
+      eta.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    document.getElementById('etaSub').textContent =
+      `~${Math.round(hoursOut * 60)} min out · based on current moving pace`;
+  } else if (!next) {
+    document.getElementById('etaValue').textContent = '—';
+    document.getElementById('etaSub').textContent = 'Finished';
+  } else if (!haveTwoPings) {
+    document.getElementById('etaValue').textContent = 'Calculating...';
+    document.getElementById('etaSub').textContent = 'Awaiting a second ping to establish pace';
+  } else {
+    document.getElementById('etaValue').textContent = '—';
+    document.getElementById('etaSub').textContent = 'Awaiting forward movement to establish pace';
+  }
+
+  updateAgoLabel();
+}
+
+function updateAgoLabel() {
+  const agoEl = document.getElementById('agoText');
+  const absEl = document.getElementById('absText');
+  if (!lastUpdateTime) return;
+
+  const secs = Math.max(0, Math.round((Date.now() - lastUpdateTime.getTime()) / 1000));
+  let agoStr;
+  if (secs < 60) agoStr = `Updated ${secs}s ago`;
+  else if (secs < 3600) agoStr = `Updated ${Math.floor(secs / 60)}m ago`;
+  else agoStr = `Updated ${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m ago`;
+
+  agoEl.textContent = agoStr;
+  absEl.textContent = lastUpdateTime.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
+}
+
+/* =========================================================================
+   LIVE ACTIVITY LOG
+   ========================================================================= */
+function addLogEntry(ping) {
+  activityLog.unshift(ping);
+  if (activityLog.length > MAX_LOG_ENTRIES) activityLog.length = MAX_LOG_ENTRIES;
+  renderActivityLog();
+}
+
+function renderActivityLog() {
+  const container = document.getElementById('activityLogList');
+  if (!activityLog.length) {
+    container.innerHTML = '<div class="log-empty">No pings received yet.</div>';
+    return;
+  }
+  container.innerHTML = activityLog.map(formatLogRow).join('');
+}
+
+function formatLogRow(ping) {
+  const timeStr = ping.time
+    ? ping.time.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    : '--:--';
+  const mileStr = ping.mile.toFixed(1);
+  const elevStr = (ping.elevationFt !== null && ping.elevationFt !== undefined)
+    ? Math.round(ping.elevationFt) + 'ft'
+    : '—';
+  const speedStr = (ping.speedMph !== null && ping.speedMph !== undefined)
+    ? ping.speedMph.toFixed(1) + ' mph'
+    : '—';
+
+  return `<div class="log-row">` +
+    `<span class="log-time">${timeStr}</span><span class="log-sep">—</span>` +
+    `<span class="log-field">Mile ${mileStr}</span><span class="log-sep">—</span>` +
+    `<span class="log-field">Elev: ${elevStr}</span><span class="log-sep">—</span>` +
+    `<span class="log-field">Speed: ${speedStr}</span>` +
+    `</div>`;
+}
+
+/* =========================================================================
+   RACE CLOCK
+   ========================================================================= */
+function formatElapsed(ms) {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+}
+
+function updateRaceClock() {
+  const row = document.getElementById('clockRow');
+  const label = document.getElementById('clockLabel');
+  const value = document.getElementById('clockValue');
+  const startTime = new Date(CONFIG.RACE_START_TIME);
+
+  if (isNaN(startTime.getTime())) {
+    row.classList.remove('finished');
+    label.textContent = 'Race Clock';
+    value.textContent = 'Set RACE_START_TIME';
+    return;
+  }
+
+  if (raceFinished && finishElapsedMs !== null) {
+    row.classList.add('finished');
+    label.textContent = 'Finish Time';
+    value.textContent = formatElapsed(finishElapsedMs);
+    return;
+  }
+
+  row.classList.remove('finished');
+  const now = Date.now();
+
+  if (now < startTime.getTime()) {
+    label.textContent = 'Race Starts In';
+    value.textContent = formatElapsed(startTime.getTime() - now);
+    return;
+  }
+
+  label.textContent = 'Elapsed Time';
+  value.textContent = formatElapsed(now - startTime.getTime());
+}
+
+/* =========================================================================
+   CONNECTION STATUS ENGINE (three real states, no simulation)
+   ========================================================================= */
+function getLastKnownPing() {
+  return lastTwoPings.length ? lastTwoPings[lastTwoPings.length - 1] : null;
+}
+
+function updateConnectionStatus() {
+  const banner = document.getElementById('statusBanner');
+  const dot = document.getElementById('statusDot');
+  const text = document.getElementById('statusText');
+  const last = getLastKnownPing();
+
+  // INITIAL STATE — no valid point has ever been parsed from the feed.
+  if (!last || !last.time) {
+    banner.className = 'status-banner initial';
+    banner.textContent = '🛰️ Waiting for Garmin Signal (Device has not broadcasted its first point yet).';
+    dot.className = 'status-dot';
+    text.textContent = 'Waiting';
+    return;
+  }
+
+  const minutesAgo = Math.max(0, Math.floor((Date.now() - last.time.getTime()) / 60000));
+
+  // STALE STATE — last known ping is older than the configured threshold.
+  if (minutesAgo >= CONFIG.STALE_THRESHOLD_MINUTES) {
+    banner.className = 'status-banner stale';
+    banner.textContent =
+      `⚠️ Signal Interrupted (Last update delayed by ${minutesAgo} minute${minutesAgo === 1 ? '' : 's'}). ` +
+      `Runner is likely in heavy canopy or a valley.`;
+    dot.className = 'status-dot stale';
+    text.textContent = 'Stale';
+    return;
+  }
+
+  // ACTIVE STATE — a recent, valid ping is on hand.
+  banner.className = 'status-banner active';
+  banner.textContent = `🟢 Tracking Live (Last updated ${minutesAgo} minute${minutesAgo === 1 ? '' : 's'} ago).`;
+  dot.className = 'status-dot live';
+  text.textContent = 'Live';
+}
+</script>
+</body>
+</html>
