@@ -34,14 +34,19 @@ module.exports = async (req, res) => {
   }
 
   try {
+    // We pass standard browser headers to bypass Garmin's automated bot/firewall handshake block
     const upstream = await fetch(targetUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; PatriotLoopTracker/1.0)' }
+      headers: { 
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'application/xml,text/xml,application/xhtml+xml,text/html;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5'
+      }
     });
     const text = await upstream.text();
 
     res.status(upstream.status);
     res.setHeader('Content-Type', 'text/xml; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.send(text);
   } catch (err) {
     res.status(502).send('Upstream fetch to Garmin failed: ' + err.message);
